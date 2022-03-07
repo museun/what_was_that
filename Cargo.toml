@@ -1,0 +1,17 @@
+[package]
+name = "what_was_that"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+alto_logger = "0.3.7"
+anyhow = "1.0.55"
+log = "0.4.14"
+rspotify = { version = "0.11.3", features = ["cli"] }
+serenity = "0.10.10"
+simple_env_load = "0.2.0"
+tokio = { version = "1.17.0", features = ["io-util", "net", "rt-multi-thread", "sync", "macros"] }
+
+[features]
