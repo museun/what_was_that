@@ -1752,7 +1752,9 @@ version = "0.1.0"
 dependencies = [
  "alto_logger",
  "anyhow",
+ "fastrand",
  "log",
+ "pin-project-lite",
  "rspotify",
  "serenity",
  "simple_env_load",
