@@ -224,14 +224,14 @@ mod twitch {
         ) -> anyhow::Result<()> {
             let msg = format!("PRIVMSG {channel} :{data}\r\n");
             log::trace!("> {}", msg.escape_debug());
-            self.write.write_all(msg.as_bytes()).await?;
-            self.write.flush().await?;
+            self.raw(msg).await?;
             Ok(())
         }
 
         pub async fn raw(&mut self, input: impl AsRef<[u8]> + Send + Sync) -> anyhow::Result<()> {
             self.write.write_all(input.as_ref()).await?;
             self.write.write_all(b"\r\n").await?;
+            self.write.flush().await?;
             Ok(())
         }
 
