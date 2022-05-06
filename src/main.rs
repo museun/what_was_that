@@ -344,6 +344,7 @@ mod twitch {
     #[derive(Debug)]
     pub struct Tags(HashMap<Box<str>, Box<str>>);
 
+    // TODO what is this supposed to be used for?
     impl Tags {
         pub fn get<K>(&self, key: &K) -> Option<&str>
         where
@@ -426,17 +427,19 @@ mod twitch {
     }
 }
 
+type SpotifyCallback =
+    dyn Fn(&spotify::Queue<spotify::Song>) -> Cow<'static, str> + Send + Sync + 'static;
+
 #[derive(Default)]
 struct Commands {
-    map: HashMap<Box<str>, Box<dyn Fn(&spotify::Queue<spotify::Song>) -> Cow<'static, str>>>,
+    map: HashMap<Box<str>, Box<SpotifyCallback>>,
 }
 
 impl Commands {
-    fn with(
-        mut self,
-        key: &str,
-        func: impl Fn(&spotify::Queue<spotify::Song>) -> Cow<'static, str> + 'static,
-    ) -> Self {
+    fn with<F>(mut self, key: &str, func: F) -> Self
+    where
+        F: Fn(&spotify::Queue<spotify::Song>) -> Cow<'static, str> + 'static + Send + Sync,
+    {
         self.map.insert(key.into(), Box::new(func));
         self
     }
