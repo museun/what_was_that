@@ -1,3 +1,8 @@
+#![cfg_attr(
+    any(debug_assertions, test),
+    allow(dead_code, unused_variables, unreachable_code,)
+)]
+
 use std::{borrow::Cow, collections::HashMap};
 
 mod spotify {
@@ -577,8 +582,8 @@ async fn handle_privmsg(
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    alto_logger::init_term_logger()?;
     simple_env_load::load_env_from(&[".dev.env", ".env"]);
+    alto_logger::init_term_logger()?;
 
     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
 
