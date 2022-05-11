@@ -11,7 +11,7 @@ mod spotify {
     use rspotify::{
         auth_code::AuthCodeSpotify,
         clients::oauth::OAuthClient,
-        model::{CurrentlyPlayingType, FullTrack, PlayableItem, TrackId},
+        model::{CurrentlyPlayingContext, CurrentlyPlayingType, FullTrack, PlayableItem, TrackId},
         Credentials, OAuth,
     };
     use std::{collections::VecDeque, time::Duration};
@@ -30,18 +30,6 @@ mod spotify {
             }
         }
 
-        pub fn newest(&self) -> Option<&T> {
-            self.inner.back()
-        }
-
-        pub fn iter(&self) -> impl Iterator<Item = &T> + '_ {
-            self.inner.iter().rev()
-        }
-
-        pub fn oldest(&self) -> Option<&T> {
-            self.inner.front()
-        }
-
         pub fn push(&mut self, item: T) {
             while self.inner.len() >= self.max {
                 self.inner.pop_back();
@@ -55,6 +43,18 @@ mod spotify {
             T: PartialEq,
         {
             self.inner.back().filter(|&d| d == item).is_some()
+        }
+
+        pub fn newest(&self) -> Option<&T> {
+            self.inner.back()
+        }
+
+        pub fn oldest(&self) -> Option<&T> {
+            self.inner.front()
+        }
+
+        pub fn iter(&self) -> impl Iterator<Item = &T> + '_ {
+            self.inner.iter().rev()
         }
     }
 
@@ -99,18 +99,22 @@ mod spotify {
             }
         }
 
-        pub async fn get_song(&mut self) -> anyhow::Result<Option<Song>> {
+        pub async fn get_song(&mut self) -> Option<Song> {
             let current = self
                 .client
                 .current_playing(None, <Option<Option<_>>>::None)
-                .await?
-                .with_context(|| "no song found")?;
-
-            if !current.is_playing
-                || !matches!(current.currently_playing_type, CurrentlyPlayingType::Track)
-            {
-                return Ok(None);
-            }
+                .await
+                .ok()
+                .flatten()
+                .filter(
+                    |&CurrentlyPlayingContext {
+                         is_playing,
+                         currently_playing_type: ty,
+                         ..
+                     }| {
+                        is_playing && matches!(ty, CurrentlyPlayingType::Track)
+                    },
+                )?;
 
             let FullTrack {
                 id,
@@ -121,25 +125,25 @@ mod spotify {
                 ..
             } = match current.item {
                 Some(PlayableItem::Track(track)) => track,
-                _ => return Ok(None),
+                _ => return None,
             };
 
-            let id = id.with_context(|| "no id found")?;
+            let id = id?;
             if self.seen.has(&id) {
-                return Ok(None);
+                return None;
             }
             self.seen.push(id.clone());
 
             let song = Song {
                 id,
-                href: href.with_context(|| "no href found")?,
+                href: href?,
                 name,
                 artists: artists.iter().map(|a| &*a.name).join(", "),
                 duration,
-                progress: current.progress.with_context(|| "song is not playing")?,
+                progress: current.progress?,
             };
 
-            Ok(Some(song))
+            Some(song)
         }
     }
 
@@ -154,6 +158,7 @@ mod spotify {
     }
 
     impl Song {
+        #[allow(dead_code)]
         const fn end_of_song(&self) -> Option<Duration> {
             self.duration.checked_sub(self.progress)
         }
@@ -241,7 +246,8 @@ mod twitch {
         }
 
         pub async fn connect<const N: usize>(reg: Registration<'_, N>) -> anyhow::Result<Self> {
-            let start = std::time::Instant::now();
+            // TODO heartbeat
+
             let Registration {
                 oauth,
                 channel,
@@ -350,6 +356,7 @@ mod twitch {
     pub struct Tags(HashMap<Box<str>, Box<str>>);
 
     // TODO what is this supposed to be used for?
+    #[allow(dead_code)]
     impl Tags {
         pub fn get<K>(&self, key: &K) -> Option<&str>
         where
@@ -412,9 +419,7 @@ mod twitch {
                 Self::User { name } | Self::Server { host: name } => &*name,
             }
         }
-    }
 
-    impl Prefix {
         fn parse(input: &mut &str) -> Option<Self> {
             if !input.starts_with(':') {
                 return None;
@@ -432,29 +437,49 @@ mod twitch {
     }
 }
 
-type SpotifyCallback =
-    dyn Fn(&spotify::Queue<spotify::Song>) -> Cow<'static, str> + Send + Sync + 'static;
+// TODO this could borrow from the queue (and be covariant to 'static)
+type SpotifyCallback = fn(&spotify::Queue<spotify::Song>) -> Reply<'static>;
 
 #[derive(Default)]
 struct Commands {
-    map: HashMap<Box<str>, Box<SpotifyCallback>>,
+    map: HashMap<Box<str>, SpotifyCallback>,
 }
 
 impl Commands {
-    fn with<F>(mut self, key: &str, func: F) -> Self
-    where
-        F: Fn(&spotify::Queue<spotify::Song>) -> Cow<'static, str> + 'static + Send + Sync,
-    {
-        self.map.insert(key.into(), Box::new(func));
+    fn with(
+        mut self,
+        key: &str,
+        func: fn(&spotify::Queue<spotify::Song>) -> Reply<'static>,
+    ) -> Self {
+        self.map.insert(key.into(), func);
         self
     }
 
-    fn dispatch(
-        &self,
+    fn dispatch<'a>(
+        &'a self,
         input: &str,
-        queue: &spotify::Queue<spotify::Song>,
-    ) -> Option<impl std::fmt::Display> {
+        queue: &'a spotify::Queue<spotify::Song>,
+    ) -> Option<Reply<'static>> {
         self.map.get(input).map(|func| func(queue))
+    }
+}
+
+enum Reply<'a> {
+    Single(Cow<'a, str>),
+    Many(Cow<'a, [Cow<'a, str>]>),
+    #[allow(dead_code)]
+    None,
+}
+
+impl<'b, 'a: 'b> Reply<'a> {
+    fn iter(&'b self) -> impl Iterator<Item = &'b str> + 'b {
+        match self {
+            Self::Single(s) => std::slice::from_ref(s),
+            Self::Many(n) => &**n,
+            Self::None => &[],
+        }
+        .iter()
+        .map(std::ops::Deref::deref)
     }
 }
 
@@ -496,11 +521,6 @@ pin_project_lite::pin_project! {
     }
 }
 
-enum Either<L, R> {
-    Left(L),
-    Right(R),
-}
-
 impl<L, R> std::future::Future for Or<L, R>
 where
     L: std::future::Future + Send + Sync,
@@ -515,9 +535,12 @@ where
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
+        use {
+            std::task::Poll,
+            Either::{Left, Right},
+        };
+
         let this = self.project();
-        use std::task::Poll;
-        use Either::{Left, Right};
 
         macro_rules! poll {
             ($expr:ident => $map:expr) => {
@@ -545,27 +568,80 @@ where
     }
 }
 
-fn current(queue: &spotify::Queue<spotify::Song>) -> Cow<'static, str> {
-    match queue.newest() {
+enum Either<L, R> {
+    Left(L),
+    Right(R),
+}
+
+fn current(queue: &spotify::Queue<spotify::Song>) -> Reply<'static> {
+    Reply::Single(match queue.newest() {
         Some(s) => s.to_string().into(),
         None => Cow::Borrowed("I don't know"),
-    }
+    })
 }
 
-fn previous(queue: &spotify::Queue<spotify::Song>) -> Cow<'static, str> {
-    match queue.iter().nth(1) {
+fn previous(queue: &spotify::Queue<spotify::Song>) -> Reply<'static> {
+    Reply::Single(match queue.oldest() {
         Some(s) => s.to_string().into(),
         None => Cow::Borrowed("no previous song"),
-    }
+    })
 }
 
-async fn handle_privmsg(
-    msg: &twitch::Message,
-    bot: &mut twitch::Bot,
-    commands: &Commands,
-    queue: &spotify::Queue<spotify::Song>,
-) -> anyhow::Result<()> {
-    if let twitch::Command::Privmsg { data, channel } = &msg.command {
+fn recent(queue: &spotify::Queue<spotify::Song>) -> Reply<'static> {
+    const MAX: usize = 10;
+
+    Reply::Many(
+        queue
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                format!(
+                    "{}: {}",
+                    match i {
+                        0 => Cow::Borrowed("current"),
+                        1 => Cow::Borrowed("previous"),
+                        n => Cow::Owned(format!("previous (-{})", n)),
+                    },
+                    s
+                )
+            })
+            .map(Into::into)
+            .take(MAX)
+            .collect::<Cow<'_, [Cow<'_, str>]>>(),
+    )
+}
+
+struct AnnoyingBot {
+    channel: Box<str>,
+    bot: twitch::Bot,
+    commands: Commands,
+    queue: spotify::Queue<spotify::Song>,
+}
+
+impl AnnoyingBot {
+    fn new(bot: twitch::Bot, channel: impl Into<Box<str>>, commands: Commands) -> Self {
+        Self {
+            bot,
+            channel: channel.into(),
+            commands,
+            queue: spotify::Queue::new(10),
+        }
+    }
+
+    fn push_song(&mut self, song: spotify::Song) {
+        self.queue.push(song)
+    }
+
+    async fn read_message(&mut self) -> anyhow::Result<twitch::Message> {
+        self.bot.read_message().await
+    }
+
+    async fn handle_privmsg(&mut self, msg: &twitch::Message) -> anyhow::Result<()> {
+        let (data, channel) = match &msg.command {
+            twitch::Command::Privmsg { data, channel } => (data, channel),
+            _ => return Ok(()),
+        };
+
         log::debug!(
             "[{}] {}: {}",
             channel,
@@ -573,11 +649,21 @@ async fn handle_privmsg(
             data
         );
 
-        if let Some(out) = commands.dispatch(&*data, queue) {
-            bot.send("#museun", out).await?;
+        for el in self
+            .commands
+            .dispatch(&*data, &self.queue)
+            .iter()
+            .flat_map(Reply::iter)
+        {
+            self.reply(el).await?;
         }
+
+        Ok(())
     }
-    Ok(())
+
+    async fn reply(&mut self, data: impl std::fmt::Display + Send) -> anyhow::Result<()> {
+        self.bot.send(&*self.channel, data).await
+    }
 }
 
 #[tokio::main]
@@ -587,45 +673,63 @@ async fn main() -> anyhow::Result<()> {
 
     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
 
-    tokio::task::spawn(async move {
+    let (quit_tx, mut quit_rx) = tokio::sync::oneshot::channel::<()>();
+
+    let fut = async move {
         let mut spotify = spotify::Spotify::connect().await.unwrap();
-        while let Ok(song) = spotify.get_song().await {
-            if let Some(song) = song {
-                log::trace!(target: "spotify", "got song: {}", song);
-                if tx.send(song).await.is_err() {
-                    break;
-                }
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+
+        loop {
+            // TODO look up to see if I'm streaming, if I'm not, don't do this
+
+            tokio::pin! {
+                let song = spotify.get_song();
+                let quit = &mut quit_rx;
+                let tick = interval.tick();
             }
-            log::trace!(target: "spotify", "sleeping for 10 seconds");
-            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+
+            tokio::select! {
+                Some(song) = song => {
+                    log::trace!(target: "spotify", "got song: {}", song);
+                    if tx.send(song).await.is_err() {
+                        break;
+                    }
+                }
+                _ = quit => break,
+                _ = tick => {}
+            }
         }
-    });
+    };
+
+    tokio::task::spawn(fut);
+
+    let channel = std::env::var("SHAKEN_TWITCH_CHANNEL").unwrap();
 
     let oauth = std::env::var("SHAKEN_TWITCH_OAUTH_TOKEN").unwrap();
-    let mut bot = twitch::Bot::connect(twitch::Registration {
+    let bot = twitch::Bot::connect(twitch::Registration {
         oauth: Cow::Owned(oauth),
-        channel: Cow::Borrowed("#museun"),
+        channel: Cow::Borrowed(&*channel),
         caps: twitch::DEFAULT_CAPS,
     })
     .await?;
 
-    let mut songs = spotify::Queue::<spotify::Song>::new(10);
-
     let commands = Commands::default()
         .with("!song", current)
-        .with("!previous", previous);
-    // !playlist
-    // !recent (collate the last 10 songs and send it as a gist)
+        .with("!previous", previous)
+        .with("!recent", recent);
+
+    let mut annoying = AnnoyingBot::new(bot, channel, commands);
 
     loop {
         let recv = rx.recv();
-        let msg = bot.read_message();
+        let msg = annoying.read_message();
 
         match msg.race(recv).await {
-            Either::Left(Ok(msg)) => handle_privmsg(&msg, &mut bot, &commands, &songs).await?,
+            Either::Left(Ok(msg)) => annoying.handle_privmsg(&msg).await?,
+
             Either::Right(Some(song)) => {
-                bot.send("#museun", &song).await?;
-                songs.push(song);
+                annoying.reply(&song).await?;
+                annoying.push_song(song);
             }
             _ => continue,
         }
