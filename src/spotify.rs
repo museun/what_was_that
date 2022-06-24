@@ -4,7 +4,7 @@ use anyhow::Context as _;
 use rspotify::{
     auth_code::AuthCodeSpotify,
     clients::oauth::OAuthClient,
-    model::{CurrentlyPlayingContext, CurrentlyPlayingType, FullTrack, PlayableItem, TrackId},
+    model::{CurrentlyPlayingContext, CurrentlyPlayingType, FullTrack, Id, PlayableItem, TrackId},
     Credentials, OAuth,
 };
 use std::{collections::VecDeque, time::Duration};
@@ -109,7 +109,6 @@ where
 
         let FullTrack {
             id,
-            href,
             name,
             artists,
             duration,
@@ -127,7 +126,6 @@ where
 
         let song = Song {
             id,
-            href: href?,
             name,
             artists: artists.iter().map(|a| &*a.name).join(", "),
             duration,
@@ -141,7 +139,6 @@ where
 #[derive(Debug, Clone)]
 pub struct Song {
     pub id: TrackId,
-    pub href: String,
     pub name: String,
     pub artists: String,
     pub duration: Duration,
@@ -157,6 +154,6 @@ impl Song {
 
 impl std::fmt::Display for Song {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} -> {} - {}", self.href, self.artists, self.name)
+        write!(f, "{} -> {} - {}", self.id.url(), self.artists, self.name)
     }
 }
