@@ -12,19 +12,65 @@ use util::{
 // TODO this could borrow from the queue (and be covariant to 'static)
 type SpotifyCallback = fn(&spotify::Queue<spotify::Song>) -> Reply<'static>;
 
+struct Entry<'a> {
+    key: &'a str,
+    val: SpotifyCallback,
+    map: HashMap<Box<str>, SpotifyCallback>,
+}
+
+impl<'a> std::fmt::Debug for Entry<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Entry")
+            .field("key", &self.key)
+            .field("val", &(self.val as *const SpotifyCallback))
+            .field("map", &self.map.keys().map(|s| &**s))
+            .finish()
+    }
+}
+
+impl<'a> Entry<'a> {
+    fn alias(mut self, key: &'a str) -> Self {
+        let key = std::mem::replace(&mut self.key, key);
+        self.map.insert(Box::from(key), self.val);
+        self
+    }
+
+    fn with(mut self, key: &'a str, func: SpotifyCallback) -> Self {
+        let key = std::mem::replace(&mut self.key, key);
+        let func = std::mem::replace(&mut self.val, func);
+        self.map.insert(Box::from(key), func);
+        self
+    }
+
+    fn finish(mut self) -> Commands {
+        self.map.insert(Box::from(self.key), self.val);
+        Commands { map: self.map }
+    }
+}
+
 #[derive(Default)]
 struct Commands {
     map: HashMap<Box<str>, SpotifyCallback>,
 }
 
+impl std::fmt::Debug for Commands {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut map = f.debug_map();
+        for (k, v) in &self.map {
+            map.entry(&k, &format_args!("{:p}", (*v) as *const SpotifyCallback));
+        }
+
+        map.finish()
+    }
+}
+
 impl Commands {
-    fn with(
-        mut self,
-        key: &str,
-        func: fn(&spotify::Queue<spotify::Song>) -> Reply<'static>,
-    ) -> Self {
-        self.map.insert(key.into(), func);
-        self
+    fn with(self, key: &str, func: SpotifyCallback) -> Entry<'_> {
+        Entry {
+            key,
+            val: func,
+            map: self.map,
+        }
     }
 
     fn dispatch<'a>(
@@ -36,6 +82,7 @@ impl Commands {
     }
 }
 
+#[derive(Debug)]
 enum Reply<'a> {
     Single(Cow<'a, str>),
     Many(Cow<'a, [Cow<'a, str>]>),
@@ -76,7 +123,7 @@ fn recent(queue: &spotify::Queue<spotify::Song>) -> Reply<'static> {
             match index {
                 0 => Cow::Borrowed("current"),
                 1 => Cow::Borrowed("previous"),
-                n => Cow::Owned(format!("previous (-{})", n)),
+                n => Cow::Owned(format!("previous -{}", n - 1)),
             },
             size
         )
@@ -217,8 +264,12 @@ async fn main() -> anyhow::Result<()> {
 
     let commands = Commands::default()
         .with("!song", current)
+        .alias("!current")
         .with("!previous", previous)
-        .with("!recent", recent);
+        .with("!recent", recent)
+        .finish();
+
+    dbg!(&commands);
 
     let mut annoying = AnnoyingBot::new(bot, channel, commands, should_spam);
 
