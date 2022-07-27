@@ -43,7 +43,7 @@ impl<T> Queue<T> {
     }
 
     pub fn previous(&self) -> Option<&T> {
-        self.iter().nth(2)
+        self.inner.iter().rev().nth(1)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &T> + '_ {

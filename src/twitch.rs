@@ -1,6 +1,5 @@
-use std::{borrow::Cow, collections::HashMap, str::FromStr};
+use std::borrow::Cow;
 
-use anyhow::Context;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::tcp::{OwnedReadHalf, OwnedWriteHalf},
