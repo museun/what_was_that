@@ -69,10 +69,10 @@ impl Connection {
             write.write_all(b"\r\n").await?;
         }
 
-        write
-            .write_all(format!("PASS {}\r\nNICK {}\r\n", oauth, "shaken_bot").as_bytes())
-            .await?;
+        let msg = format!("PASS {}\r\nNICK {}\r\n", oauth, "shaken_bot");
+        write.write_all(msg.as_bytes()).await?;
 
+        log::info!("waiting for ready");
         let mut buf = String::with_capacity(1024);
         loop {
             let n = read.read_line(&mut buf).await?;
@@ -81,20 +81,22 @@ impl Connection {
             let msg = Message::parse(data);
             match msg.command {
                 Command::Error { message } => anyhow::bail!("error! {}", message),
-                Command::GlobalUserState => break,
+                Command::GlobalUserState => {
+                    log::info!("connected");
+                    break;
+                }
                 Command::Ping { token } => {
-                    write
-                        .write_all(format!("PONG {}\r\n", token).as_bytes())
-                        .await?
+                    let msg = format!("PONG {}\r\n", token);
+                    write.write_all(msg.as_bytes()).await?
                 }
                 _ => {}
             }
             buf.clear();
         }
 
-        write
-            .write_all(format!("JOIN {}\r\n", channel).as_bytes())
-            .await?;
+        log::info!("joining: {}", channel);
+        let msg = format!("JOIN {}\r\n", channel);
+        write.write_all(msg.as_bytes()).await?;
 
         Ok(Self { read, write })
     }

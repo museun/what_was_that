@@ -99,24 +99,17 @@ struct AnnoyingBot {
     conn: twitch::Connection,
     commands: Commands,
     queue: spotify::Queue<spotify::Song>,
-    should_spam: ShouldSpam,
 }
 
 impl AnnoyingBot {
     const MAX: usize = 5;
 
-    fn new(
-        conn: twitch::Connection,
-        channel: impl Into<Box<str>>,
-        commands: Commands,
-        should_spam: ShouldSpam,
-    ) -> Self {
+    fn new(conn: twitch::Connection, channel: impl Into<Box<str>>, commands: Commands) -> Self {
         Self {
             conn,
             channel: channel.into(),
             commands,
             queue: spotify::Queue::new(Self::MAX),
-            should_spam,
         }
     }
 
@@ -128,9 +121,14 @@ impl AnnoyingBot {
         self.conn.read_message().await
     }
 
-    async fn handle_privmsg(&mut self, msg: &twitch::Message) -> anyhow::Result<()> {
+    async fn handle_message(&mut self, msg: &twitch::Message) -> anyhow::Result<()> {
         let (data, channel) = match &msg.command {
             twitch::Command::Privmsg { data, channel } => (data, channel),
+            twitch::Command::Ping { token } => {
+                log::debug!("got a PING with {}", token);
+                self.conn.raw(format!("PONG :{}", token)).await?;
+                return Ok(());
+            }
             _ => return Ok(()),
         };
 
@@ -156,11 +154,6 @@ impl AnnoyingBot {
     async fn reply(&mut self, data: impl std::fmt::Display + Send) -> anyhow::Result<()> {
         self.conn.send(&self.channel, data).await
     }
-}
-
-enum ShouldSpam {
-    Yes,
-    No,
 }
 
 #[tokio::main]
@@ -202,6 +195,10 @@ async fn main() -> anyhow::Result<()> {
 
     let channel = std::env::var("SHAKEN_TWITCH_CHANNEL").unwrap();
     let oauth = std::env::var("SHAKEN_TWITCH_OAUTH_TOKEN").unwrap();
+    let should_spam = std::env::var("SHAKEN_TWITCH_SHOULD_SPAM")
+        .map(|s| s.to_ascii_lowercase())
+        .map(|s| matches!(&*s, "1" | "yes" | "true" | "absolutely"))
+        .unwrap_or_default();
 
     let bot = twitch::Connection::connect(twitch::Registration {
         oauth: Cow::Owned(oauth),
@@ -215,17 +212,17 @@ async fn main() -> anyhow::Result<()> {
         .with("!previous", previous)
         .with("!recent", recent);
 
-    let mut annoying = AnnoyingBot::new(bot, channel, commands, ShouldSpam::No);
+    let mut annoying = AnnoyingBot::new(bot, channel, commands);
 
     loop {
         let recv = rx.recv();
         let msg = annoying.read_message();
 
         match msg.race(recv).await {
-            Left(Ok(msg)) => annoying.handle_privmsg(&msg).await?,
+            Left(Ok(msg)) => annoying.handle_message(&msg).await?,
 
             Right(Some(song)) => {
-                if let ShouldSpam::Yes = annoying.should_spam {
+                if should_spam {
                     annoying.reply(&song).await?;
                 }
                 annoying.push_song(song);
