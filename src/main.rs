@@ -98,17 +98,24 @@ struct AnnoyingBot {
     conn: twitch::Connection,
     commands: Commands,
     queue: spotify::Queue<spotify::Song>,
+    should_spam: ShouldSpam,
 }
 
 impl AnnoyingBot {
     const MAX: usize = 5;
 
-    fn new(conn: twitch::Connection, channel: impl Into<Box<str>>, commands: Commands) -> Self {
+    fn new(
+        conn: twitch::Connection,
+        channel: impl Into<Box<str>>,
+        commands: Commands,
+        should_spam: ShouldSpam,
+    ) -> Self {
         Self {
             conn,
             channel: channel.into(),
             commands,
             queue: spotify::Queue::new(Self::MAX),
+            should_spam,
         }
     }
 
@@ -150,6 +157,11 @@ impl AnnoyingBot {
     }
 }
 
+enum ShouldSpam {
+    Yes,
+    No,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     simple_env_load::load_env_from(&[".dev.env", ".env"]);
@@ -188,8 +200,8 @@ async fn main() -> anyhow::Result<()> {
     tokio::task::spawn(fut);
 
     let channel = std::env::var("SHAKEN_TWITCH_CHANNEL").unwrap();
-
     let oauth = std::env::var("SHAKEN_TWITCH_OAUTH_TOKEN").unwrap();
+
     let bot = twitch::Connection::connect(twitch::Registration {
         oauth: Cow::Owned(oauth),
         channel: Cow::Borrowed(&*channel),
@@ -202,7 +214,7 @@ async fn main() -> anyhow::Result<()> {
         .with("!previous", previous)
         .with("!recent", recent);
 
-    let mut annoying = AnnoyingBot::new(bot, channel, commands);
+    let mut annoying = AnnoyingBot::new(bot, channel, commands, ShouldSpam::No);
 
     loop {
         let recv = rx.recv();
@@ -212,7 +224,9 @@ async fn main() -> anyhow::Result<()> {
             Left(Ok(msg)) => annoying.handle_privmsg(&msg).await?,
 
             Right(Some(song)) => {
-                annoying.reply(&song).await?;
+                if let ShouldSpam::Yes = annoying.should_spam {
+                    annoying.reply(&song).await?;
+                }
                 annoying.push_song(song);
             }
             _ => continue,
