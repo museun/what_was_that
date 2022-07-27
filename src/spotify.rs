@@ -25,7 +25,7 @@ impl<T> Queue<T> {
 
     pub fn push(&mut self, item: T) {
         while self.inner.len() >= self.max {
-            self.inner.pop_back();
+            self.inner.pop_front();
         }
 
         self.inner.push_back(item);
@@ -42,8 +42,8 @@ impl<T> Queue<T> {
         self.inner.back()
     }
 
-    pub fn oldest(&self) -> Option<&T> {
-        self.inner.front()
+    pub fn previous(&self) -> Option<&T> {
+        self.iter().nth(2)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &T> + '_ {
@@ -104,7 +104,7 @@ where
                      is_playing,
                      currently_playing_type: ty,
                      ..
-                 }| { is_playing && matches!(ty, CurrentlyPlayingType::Track) },
+                 }| is_playing && matches!(ty, CurrentlyPlayingType::Track),
             )?;
 
         let FullTrack {

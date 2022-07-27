@@ -19,12 +19,12 @@ pub struct Registration<'a, const N: usize> {
     pub channel: Cow<'a, str>,
 }
 
-pub struct Bot {
+pub struct Connection {
     read: BufReader<OwnedReadHalf>,
     write: OwnedWriteHalf,
 }
 
-impl Bot {
+impl Connection {
     pub async fn read_message(&mut self) -> anyhow::Result<Message> {
         let mut buf = String::with_capacity(1024);
         let n = self.read.read_line(&mut buf).await?;
@@ -222,7 +222,7 @@ pub enum Prefix {
 impl Prefix {
     pub const fn name(&self) -> &str {
         match self {
-            Self::User { name } | Self::Server { host: name } => &*name,
+            Self::User { name } | Self::Server { host: name } => name,
         }
     }
 

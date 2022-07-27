@@ -63,50 +63,52 @@ fn current(queue: &spotify::Queue<spotify::Song>) -> Reply<'static> {
 }
 
 fn previous(queue: &spotify::Queue<spotify::Song>) -> Reply<'static> {
-    Reply::Single(match queue.oldest() {
+    Reply::Single(match queue.previous() {
         Some(s) => s.to_string().into(),
         None => Cow::Borrowed("no previous song"),
     })
 }
 
 fn recent(queue: &spotify::Queue<spotify::Song>) -> Reply<'static> {
-    const MAX: usize = 10;
+    fn format(index: usize, size: impl std::fmt::Display) -> String {
+        format!(
+            "{}: {}",
+            match index {
+                0 => Cow::Borrowed("current"),
+                1 => Cow::Borrowed("previous"),
+                n => Cow::Owned(format!("previous (-{})", n)),
+            },
+            size
+        )
+    }
 
     Reply::Many(
         queue
             .iter()
             .enumerate()
-            .map(|(i, s)| {
-                format!(
-                    "{}: {}",
-                    match i {
-                        0 => Cow::Borrowed("current"),
-                        1 => Cow::Borrowed("previous"),
-                        n => Cow::Owned(format!("previous (-{})", n)),
-                    },
-                    s
-                )
-            })
+            .map(|(i, s)| format(i, s))
             .map(Into::into)
-            .take(MAX)
+            .take(AnnoyingBot::MAX)
             .collect::<Cow<'_, [Cow<'_, str>]>>(),
     )
 }
 
 struct AnnoyingBot {
     channel: Box<str>,
-    bot: twitch::Bot,
+    conn: twitch::Connection,
     commands: Commands,
     queue: spotify::Queue<spotify::Song>,
 }
 
 impl AnnoyingBot {
-    fn new(bot: twitch::Bot, channel: impl Into<Box<str>>, commands: Commands) -> Self {
+    const MAX: usize = 5;
+
+    fn new(conn: twitch::Connection, channel: impl Into<Box<str>>, commands: Commands) -> Self {
         Self {
-            bot,
+            conn,
             channel: channel.into(),
             commands,
-            queue: spotify::Queue::new(10),
+            queue: spotify::Queue::new(Self::MAX),
         }
     }
 
@@ -115,7 +117,7 @@ impl AnnoyingBot {
     }
 
     async fn read_message(&mut self) -> anyhow::Result<twitch::Message> {
-        self.bot.read_message().await
+        self.conn.read_message().await
     }
 
     async fn handle_privmsg(&mut self, msg: &twitch::Message) -> anyhow::Result<()> {
@@ -131,20 +133,20 @@ impl AnnoyingBot {
             data
         );
 
-        for el in self
+        for resp in self
             .commands
-            .dispatch(&*data, &self.queue)
+            .dispatch(data, &self.queue)
             .iter()
             .flat_map(Reply::iter)
         {
-            self.reply(el).await?;
+            self.reply(resp).await?;
         }
 
         Ok(())
     }
 
     async fn reply(&mut self, data: impl std::fmt::Display + Send) -> anyhow::Result<()> {
-        self.bot.send(&*self.channel, data).await
+        self.conn.send(&self.channel, data).await
     }
 }
 
@@ -156,6 +158,7 @@ async fn main() -> anyhow::Result<()> {
     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
     let (_quit_tx, mut quit_rx) = tokio::sync::oneshot::channel::<()>();
 
+    #[allow(clippy::redundant_pub_crate)]
     let fut = async move {
         let mut spotify = spotify::Spotify::connect().await.unwrap();
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
@@ -187,7 +190,7 @@ async fn main() -> anyhow::Result<()> {
     let channel = std::env::var("SHAKEN_TWITCH_CHANNEL").unwrap();
 
     let oauth = std::env::var("SHAKEN_TWITCH_OAUTH_TOKEN").unwrap();
-    let bot = twitch::Bot::connect(twitch::Registration {
+    let bot = twitch::Connection::connect(twitch::Registration {
         oauth: Cow::Owned(oauth),
         channel: Cow::Borrowed(&*channel),
         caps: twitch::DEFAULT_CAPS,
