@@ -82,16 +82,15 @@ fn recent(queue: &spotify::Queue<spotify::Song>) -> Reply<'static> {
         )
     }
 
-    // TODO this should `whisper` and not send to the chat
-    Reply::Many(
-        queue
-            .iter()
-            .enumerate()
-            .map(|(i, s)| format(i, s))
-            .map(Into::into)
-            .take(AnnoyingBot::MAX)
-            .collect::<Cow<'_, [Cow<'_, str>]>>(),
-    )
+    let seq = queue
+        .iter()
+        .enumerate()
+        .map(|(i, s)| format(i, s))
+        .map(Into::into)
+        .take(AnnoyingBot::MAX)
+        .collect();
+
+    Reply::Many(seq)
 }
 
 struct AnnoyingBot {
@@ -99,17 +98,24 @@ struct AnnoyingBot {
     conn: twitch::Connection,
     commands: Commands,
     queue: spotify::Queue<spotify::Song>,
+    should_spam: bool,
 }
 
 impl AnnoyingBot {
     const MAX: usize = 5;
 
-    fn new(conn: twitch::Connection, channel: impl Into<Box<str>>, commands: Commands) -> Self {
+    fn new(
+        conn: twitch::Connection,
+        channel: impl Into<Box<str>>,
+        commands: Commands,
+        should_spam: bool,
+    ) -> Self {
         Self {
             conn,
             channel: channel.into(),
             commands,
             queue: spotify::Queue::new(Self::MAX),
+            should_spam,
         }
     }
 
@@ -139,11 +145,13 @@ impl AnnoyingBot {
             data
         );
 
+        let max = (self.should_spam).then_some(Self::MAX).unwrap_or_default();
         for resp in self
             .commands
             .dispatch(data, &self.queue)
             .iter()
             .flat_map(Reply::iter)
+            .take(max)
         {
             self.reply(resp).await?;
         }
@@ -212,7 +220,7 @@ async fn main() -> anyhow::Result<()> {
         .with("!previous", previous)
         .with("!recent", recent);
 
-    let mut annoying = AnnoyingBot::new(bot, channel, commands);
+    let mut annoying = AnnoyingBot::new(bot, channel, commands, should_spam);
 
     loop {
         let recv = rx.recv();
