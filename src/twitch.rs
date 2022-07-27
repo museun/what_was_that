@@ -165,7 +165,7 @@ impl Message {
         let mut input = input.trim();
         let input = &mut input;
 
-        // skip the tags
+        // TODO: don't skip the tags
         if input.starts_with('@') {
             let (_tags, tail) = input.split_once(' ').expect("valid input");
             *input = tail
