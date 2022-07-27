@@ -82,6 +82,7 @@ fn recent(queue: &spotify::Queue<spotify::Song>) -> Reply<'static> {
         )
     }
 
+    // TODO this should `whisper` and not send to the chat
     Reply::Many(
         queue
             .iter()

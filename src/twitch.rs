@@ -138,7 +138,6 @@ impl Command {
 #[derive(Debug)]
 pub struct Message {
     pub raw: Box<str>,
-    pub tags: Option<Tags>,
     pub prefix: Option<Prefix>,
     pub command: Command,
 }
@@ -149,67 +148,17 @@ impl Message {
         let mut input = input.trim();
         let input = &mut input;
 
+        // skip the tags
+        if input.starts_with('@') {
+            let (_tags, tail) = input.split_once(' ').expect("valid input");
+            *input = tail
+        }
+
         Self {
             raw: raw.into(),
-            tags: Tags::parse(input),
             prefix: Prefix::parse(input),
             command: Command::parse(input),
         }
-    }
-}
-
-#[derive(Debug)]
-pub struct Tags(HashMap<Box<str>, Box<str>>);
-
-// TODO what is this supposed to be used for?
-#[allow(dead_code)]
-impl Tags {
-    pub fn get<K>(&self, key: &K) -> Option<&str>
-    where
-        Box<str>: std::borrow::Borrow<K>,
-        K: std::hash::Hash + Eq,
-    {
-        self.0.get(key).map(|s| &**s)
-    }
-
-    pub fn get_parsed<K, T>(&self, key: &K) -> anyhow::Result<T>
-    where
-        Box<str>: std::borrow::Borrow<K>,
-        K: std::hash::Hash + Eq + std::fmt::Debug,
-        T: FromStr,
-        T::Err: Into<anyhow::Error>,
-    {
-        self.get(key)
-            .with_context(|| anyhow::anyhow!("cannot find '{:?}'", key))?
-            .parse()
-            .map_err(Into::into)
-    }
-
-    pub fn get_bool<K>(&self, key: &K) -> bool
-    where
-        Box<str>: std::borrow::Borrow<K>,
-        K: std::hash::Hash + Eq + std::fmt::Debug,
-    {
-        self.get(key)
-            .filter(|&s| matches!(s, "1" | "true" | "TRUE"))
-            .is_some()
-    }
-}
-
-impl Tags {
-    fn parse(input: &mut &str) -> Option<Self> {
-        if !input.starts_with('@') {
-            return None;
-        }
-        let (head, tail) = input[1..].split_once(' ')?;
-        *input = tail;
-
-        Some(Self(
-            head.split_terminator(';')
-                .flat_map(|s| s.split_once('='))
-                .map(|(l, r)| (l.into(), r.into()))
-                .collect(),
-        ))
     }
 }
 
