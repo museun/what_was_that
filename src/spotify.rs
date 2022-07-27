@@ -92,6 +92,30 @@ where
         }
     }
 
+    pub fn try_produce_songs(mut self) -> impl Fn() -> Option<Song>
+    where
+        C: Send + Sync + 'static,
+    {
+        let (tx, rx) = flume::bounded(1);
+
+        let func = move || {
+            let interval = std::time::Duration::from_secs(10);
+            loop {
+                // TODO look up to see if I'm streaming. if I'm not, don't do this
+                if let Some(song) = self.get_song() {
+                    if tx.send(song).is_err() {
+                        break;
+                    }
+                }
+                std::thread::sleep(interval);
+            }
+        };
+
+        let _handle = std::thread::spawn(func);
+
+        move || rx.try_recv().ok()
+    }
+
     pub fn get_song(&mut self) -> Option<Song> {
         let current = self
             .client
