@@ -2,3 +2,4 @@
 .dev.env
 .env
 *.json
+/vendor
