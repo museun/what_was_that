@@ -57,7 +57,7 @@ pub struct Spotify<C> {
 }
 
 impl Spotify<AuthCodeSpotify> {
-    pub async fn connect() -> anyhow::Result<Self> {
+    pub fn connect() -> anyhow::Result<Self> {
         let credentials =
             Credentials::from_env().with_context(|| "cannot get rspotify credentials")?;
 
@@ -75,7 +75,7 @@ impl Spotify<AuthCodeSpotify> {
 
         let mut auth = AuthCodeSpotify::with_config(credentials, oauth, config);
         let url = auth.get_authorize_url(false)?;
-        auth.prompt_for_token(&url).await?;
+        auth.prompt_for_token(&url)?;
 
         Ok(auth).map(Self::new)
     }
@@ -92,11 +92,10 @@ where
         }
     }
 
-    pub async fn get_song(&mut self) -> Option<Song> {
+    pub fn get_song(&mut self) -> Option<Song> {
         let current = self
             .client
             .current_playing(None, <Option<Option<_>>>::None)
-            .await
             .ok()
             .flatten()
             .filter(

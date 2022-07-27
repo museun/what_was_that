@@ -7,10 +7,10 @@ license = "0BSD"
 [dependencies]
 alto_logger      = "0.3.7"
 anyhow           = "1.0.57"
-fastrand         = "1.7.0"
+flume = { version = "0.10.14", default-features = false }
+# fastrand         = "1.7.0"
 log              = "0.4.17"
-pin-project-lite = "0.2.9"
-rspotify         = { version = "0.11.5", features = ["cli"] }
-# serenity         = "0.11.2"
+# pin-project-lite = "0.2.9"
+rspotify         = { version = "0.11.5", features = ["cli", "client-ureq", "ureq-rustls-tls"], default-features = false }
 simple_env_load  = "0.2.0"
-tokio            = { version = "1.18.2", features = ["io-util", "net", "rt-multi-thread", "time", "sync", "macros"] }
+# tokio            = { version = "1.18.2", features = ["io-util", "net", "rt-multi-thread", "time", "sync", "macros"] }

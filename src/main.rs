@@ -1,13 +1,10 @@
 use std::{borrow::Cow, collections::HashMap};
 
+use twitch::ReadState;
+
 mod spotify;
 mod twitch;
 mod util;
-
-use util::{
-    Either::{Left, Right},
-    FutureExt as _,
-};
 
 // TODO this could borrow from the queue (and be covariant to 'static)
 type SpotifyCallback = fn(&spotify::Queue<spotify::Song>) -> Reply<'static>;
@@ -78,7 +75,17 @@ impl Commands {
         input: &str,
         queue: &'a spotify::Queue<spotify::Song>,
     ) -> Option<Reply<'static>> {
-        self.map.get(input).map(|func| func(queue))
+        self.map
+            .get(input)
+            .map(|s| {
+                log::debug!(
+                    "got command: {} -> {:p}",
+                    input,
+                    s as *const SpotifyCallback
+                );
+                s
+            })
+            .map(|func| func(queue))
     }
 }
 
@@ -170,16 +177,16 @@ impl AnnoyingBot {
         self.queue.push(song)
     }
 
-    async fn read_message(&mut self) -> anyhow::Result<twitch::Message> {
-        self.conn.read_message().await
+    fn read_message(&mut self) -> anyhow::Result<ReadState<twitch::Message>> {
+        self.conn.read_message()
     }
 
-    async fn handle_message(&mut self, msg: &twitch::Message) -> anyhow::Result<()> {
+    fn handle_message(&mut self, msg: &twitch::Message) -> anyhow::Result<()> {
         let (data, channel) = match &msg.command {
             twitch::Command::Privmsg { data, channel } => (data, channel),
             twitch::Command::Ping { token } => {
                 log::debug!("got a PING with {}", token);
-                self.conn.raw(format!("PONG :{}", token)).await?;
+                self.conn.raw(format!("PONG :{}", token))?;
                 return Ok(());
             }
             _ => return Ok(()),
@@ -192,7 +199,7 @@ impl AnnoyingBot {
             data
         );
 
-        let max = (self.should_spam).then_some(Self::MAX).unwrap_or_default();
+        let max = (self.should_spam).then_some(Self::MAX).unwrap_or(1);
         for resp in self
             .commands
             .dispatch(data, &self.queue)
@@ -200,56 +207,43 @@ impl AnnoyingBot {
             .flat_map(Reply::iter)
             .take(max)
         {
-            self.reply(resp).await?;
+            log::debug!("replying: {}", resp);
+            self.reply(resp)?;
         }
 
         Ok(())
     }
 
-    async fn reply(&mut self, data: impl std::fmt::Display + Send) -> anyhow::Result<()> {
-        self.conn.send(&self.channel, data).await
+    fn reply(&mut self, data: impl std::fmt::Display + Send) -> anyhow::Result<()> {
+        self.conn.send(&self.channel, data)
     }
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     simple_env_load::load_env_from(&[".dev.env", ".env"]);
     alto_logger::init_term_logger()?;
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-    let (_quit_tx, mut quit_rx) = tokio::sync::oneshot::channel::<()>();
+    let (tx, rx) = flume::bounded(1);
 
-    #[allow(clippy::redundant_pub_crate)]
-    let fut = async move {
-        let mut spotify = spotify::Spotify::connect().await.unwrap();
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
-
+    let mut spotify = spotify::Spotify::connect()?;
+    let func = move || {
+        let interval = std::time::Duration::from_secs(10);
         loop {
-            // TODO look up to see if I'm streaming, if I'm not, don't do this
-
-            tokio::pin! {
-                let song = spotify.get_song();
-                let quit = &mut quit_rx;
-                let tick = interval.tick();
-            }
-
-            tokio::select! {
-                Some(song) = song => {
-                    log::trace!(target: "spotify", "got song: {}", song);
-                    if tx.send(song).await.is_err() {
-                        break;
-                    }
+            // TODO look up to see if I'm streaming. if I'm not, don't do this
+            if let Some(song) = spotify.get_song() {
+                if tx.send(song).is_err() {
+                    break;
                 }
-                _ = quit => break,
-                _ = tick => {}
             }
+            std::thread::sleep(interval);
         }
     };
 
-    tokio::task::spawn(fut);
+    std::thread::spawn(func);
 
     let channel = std::env::var("SHAKEN_TWITCH_CHANNEL").unwrap();
     let oauth = std::env::var("SHAKEN_TWITCH_OAUTH_TOKEN").unwrap();
+    let nick = std::env::var("SHAKEN_TWITCH_NAME").unwrap();
     let should_spam = std::env::var("SHAKEN_TWITCH_SHOULD_SPAM")
         .map(|s| s.to_ascii_lowercase())
         .map(|s| matches!(&*s, "1" | "yes" | "true" | "absolutely"))
@@ -257,10 +251,10 @@ async fn main() -> anyhow::Result<()> {
 
     let bot = twitch::Connection::connect(twitch::Registration {
         oauth: Cow::Owned(oauth),
+        nick: Cow::Owned(nick),
         channel: Cow::Borrowed(&*channel),
         caps: twitch::DEFAULT_CAPS,
-    })
-    .await?;
+    })?;
 
     let commands = Commands::default()
         .with("!song", current)
@@ -269,24 +263,30 @@ async fn main() -> anyhow::Result<()> {
         .with("!recent", recent)
         .finish();
 
-    dbg!(&commands);
-
     let mut annoying = AnnoyingBot::new(bot, channel, commands, should_spam);
 
     loop {
-        let recv = rx.recv();
-        let msg = annoying.read_message();
-
-        match msg.race(recv).await {
-            Left(Ok(msg)) => annoying.handle_message(&msg).await?,
-
-            Right(Some(song)) => {
-                if should_spam {
-                    annoying.reply(&song).await?;
-                }
-                annoying.push_song(song);
+        if let Ok(song) = rx.try_recv() {
+            log::trace!("song: {:?}", song);
+            if should_spam {
+                annoying.reply(&song)?;
             }
-            _ => continue,
+            annoying.push_song(song);
+        }
+
+        match annoying.read_message()? {
+            ReadState::Complete(msg) => annoying.handle_message(&msg)?,
+            ReadState::Eof => break,
+            ReadState::Incomplete => {
+                fn yield_now() {
+                    // TODO really yield here
+                    std::thread::sleep(std::time::Duration::from_millis(1))
+                }
+                // XXX: spin_hint isn't doing anything
+                yield_now()
+            }
         }
     }
+
+    Ok(())
 }

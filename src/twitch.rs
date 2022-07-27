@@ -1,8 +1,7 @@
-use std::borrow::Cow;
-
-use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    net::tcp::{OwnedReadHalf, OwnedWriteHalf},
+use std::{
+    borrow::Cow,
+    io::{BufRead as _, BufReader, Write as _},
+    net::TcpStream,
 };
 
 pub const DEFAULT_CAPS: [&str; 3] = [
@@ -14,67 +13,82 @@ pub const DEFAULT_CAPS: [&str; 3] = [
 #[derive(Debug, Clone)]
 pub struct Registration<'a, const N: usize> {
     pub oauth: Cow<'a, str>,
+    pub nick: Cow<'a, str>,
     pub caps: [&'static str; N],
     pub channel: Cow<'a, str>,
 }
 
 pub struct Connection {
-    read: BufReader<OwnedReadHalf>,
-    write: OwnedWriteHalf,
+    read: BufReader<TcpStream>,
+    write: TcpStream,
+}
+
+pub enum ReadState<T> {
+    Eof,
+    Incomplete,
+    Complete(T),
 }
 
 impl Connection {
-    pub async fn read_message(&mut self) -> anyhow::Result<Message> {
+    pub fn read_message(&mut self) -> anyhow::Result<ReadState<Message>> {
+        use std::io::ErrorKind::*;
         let mut buf = String::with_capacity(1024);
-        let n = self.read.read_line(&mut buf).await?;
+        let n = match self.read.read_line(&mut buf) {
+            Ok(0) => return Ok(ReadState::Eof),
+            Ok(n) => n,
+            Err(e) if e.kind() == WouldBlock => return Ok(ReadState::Incomplete),
+            Err(e) if e.kind() == Interrupted => return Ok(ReadState::Incomplete),
+            Err(err) => anyhow::bail!(err),
+        };
         let data = &buf[..n];
         log::trace!(target: "irc", "{}", data.escape_debug());
-        Ok(Message::parse(data))
+        Ok(ReadState::Complete(Message::parse(data)))
     }
 
-    pub async fn send(
+    pub fn send(
         &mut self,
         channel: &str,
         data: impl std::fmt::Display + Send,
     ) -> anyhow::Result<()> {
         let msg = format!("PRIVMSG {channel} :{data}\r\n");
         log::trace!("> {}", msg.escape_debug());
-        self.raw(msg).await?;
+        self.raw(msg)?;
         Ok(())
     }
 
-    pub async fn raw(&mut self, input: impl AsRef<[u8]> + Send + Sync) -> anyhow::Result<()> {
-        self.write.write_all(input.as_ref()).await?;
-        self.write.write_all(b"\r\n").await?;
-        self.write.flush().await?;
+    pub fn raw(&mut self, input: impl AsRef<[u8]> + Send + Sync) -> anyhow::Result<()> {
+        self.write.write_all(input.as_ref())?;
+        self.write.write_all(b"\r\n")?;
+        self.write.flush()?;
         Ok(())
     }
 
-    pub async fn connect<const N: usize>(reg: Registration<'_, N>) -> anyhow::Result<Self> {
+    pub fn connect<const N: usize>(reg: Registration<'_, N>) -> anyhow::Result<Self> {
         // TODO heartbeat
 
         let Registration {
             oauth,
+            nick,
             channel,
             caps,
         } = reg;
 
-        let stream = tokio::net::TcpStream::connect("irc.chat.twitch.tv:6667").await?;
-        let (read, mut write) = stream.into_split();
-        let mut read = BufReader::new(read);
+        let mut write = TcpStream::connect("irc.chat.twitch.tv:6667")?;
+        let mut read = write.try_clone().map(BufReader::new)?;
 
         for cap in caps {
-            write.write_all(cap.as_bytes()).await?;
-            write.write_all(b"\r\n").await?;
+            write.write_all(cap.as_bytes())?;
+            write.write_all(b"\r\n")?;
         }
 
-        let msg = format!("PASS {}\r\nNICK {}\r\n", oauth, "shaken_bot");
-        write.write_all(msg.as_bytes()).await?;
+        let msg = format!("PASS {}\r\nNICK {}\r\n", oauth, nick);
+
+        write.write_all(msg.as_bytes())?;
 
         log::info!("waiting for ready");
         let mut buf = String::with_capacity(1024);
         loop {
-            let n = read.read_line(&mut buf).await?;
+            let n = read.read_line(&mut buf)?;
             let data = &buf[..n];
 
             let msg = Message::parse(data);
@@ -86,16 +100,18 @@ impl Connection {
                 }
                 Command::Ping { token } => {
                     let msg = format!("PONG {}\r\n", token);
-                    write.write_all(msg.as_bytes()).await?
+                    write.write_all(msg.as_bytes())?
                 }
                 _ => {}
             }
             buf.clear();
         }
 
+        read.get_mut().set_nonblocking(true)?;
+
         log::info!("joining: {}", channel);
         let msg = format!("JOIN {}\r\n", channel);
-        write.write_all(msg.as_bytes()).await?;
+        write.write_all(msg.as_bytes())?;
 
         Ok(Self { read, write })
     }
